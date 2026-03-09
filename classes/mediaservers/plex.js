@@ -474,11 +474,29 @@ class Plex {
           devices = devices.toLowerCase().replace(", ",",").replace(" ,",",").replace(/,+$/, "").split(",");
           let users = filterUsers !== undefined ? filterUsers : "";
           users = users.toLowerCase().replace(", ",",").replace(" ,",",").replace(/,+$/, "").split(",");
-          // apply filter checks
+
+          // Determine if any positive filters are configured
+          const hasDeviceFilter = devices[0] !== "";
+          const hasUserFilter = users[0] !== "";
+          const noFiltersSet = filterRemote !== 'true' && filterLocal !== 'true' && !hasDeviceFilter && !hasUserFilter;
+
+          // --- Positive grants (any matching condition allows the card through) ---
+          // If no filters at all are configured, show everything
+          if(noFiltersSet) okToAdd = true;
+          // Connection-type filters
           if(filterRemote=='true' && medCard.playerLocal == false) okToAdd = true;
           if(filterLocal=='true' && medCard.playerLocal == true) okToAdd = true;
-          if(users.length > 0 && users.includes(md.User.title.toLowerCase())==false && users[0] !== "") okToAdd = false;
-          if(devices.length > 0 && !util.isEmpty(medCard.playerDevice) && devices.includes(medCard.playerDevice.toLowerCase())==false && devices[0] !== "") okToAdd = false;
+          // Device filter: positively grant if this device is in the allow-list
+          if(hasDeviceFilter && !util.isEmpty(medCard.playerDevice) && devices.includes(medCard.playerDevice.toLowerCase())) okToAdd = true;
+          // User filter: positively grant if this user is in the allow-list
+          if(hasUserFilter && users.includes(md.User.title.toLowerCase())) okToAdd = true;
+
+          // --- Negative overrides (revoke if criteria not met) ---
+          // If a user filter is set and this user is NOT in the list, deny
+          if(hasUserFilter && users.includes(md.User.title.toLowerCase())==false) okToAdd = false;
+          // If a device filter is set and this device is NOT in the list, deny
+          if(hasDeviceFilter && !util.isEmpty(medCard.playerDevice) && devices.includes(medCard.playerDevice.toLowerCase())==false) okToAdd = false;
+          // Always deny excluded libraries
           if(excludeLibs !== undefined && excludeLibs !== "" && excludeLibs.includes(md.librarySectionTitle)) { 
             //console.log('Now Screening - Excluded library:', md.librarySectionTitle);
             okToAdd = false;
