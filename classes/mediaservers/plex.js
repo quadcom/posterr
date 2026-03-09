@@ -5,6 +5,8 @@ const util = require("./../core/utility");
 const core = require("./../core/cache");
 const { CardTypeEnum } = require("./../cards/CardType");
 const { error } = require("jquery");
+// Track last logged NS sessions to avoid repeating log lines every poll cycle
+let _nsLastLoggedState = "";
 // const sizeOf = require("image-size");
 
 /**
@@ -22,6 +24,7 @@ class Plex {
     this.plexPort = plexPort;
     this.plexToken = plexToken;
     this.libraryKeys = [];
+    this._loggedSessions = new Set();
 
     // create connection to use
     this.client = new plexAPI({
@@ -72,6 +75,7 @@ class Plex {
       throw err;
     }
     // reutrn an empty array if no results
+    let nsDebugLines = [];
     if (
       nsRaw != [] &&
       nsRaw.MediaContainer != undefined &&
@@ -451,10 +455,9 @@ class Plex {
         medCard.playerIP = md.Player.address;
         medCard.playerLocal = md.Player.local;
 
-        // Debug: log device and title info
+        // Debug: collect session info for change-detection logging (logged once after loop, only on change)
         let dbgTitle = md.type === "episode" ? (md.grandparentTitle + " - " + md.title) : md.title;
-        let dbgNow = new Date();
-        console.log(dbgNow.toLocaleString() + " [NS Debug] Device: '" + medCard.playerDevice + "' | User: '" + (md.User ? md.User.title : "unknown") + "' | Playing: '" + dbgTitle + "' | Local: " + md.Player.local);
+        nsDebugLines.push("  Device: '" + medCard.playerDevice + "' | User: '" + (md.User ? md.User.title : "unknown") + "' | Playing: '" + dbgTitle + "' | Local: " + md.Player.local);
 
         // console.log(" ");
         // console.log('Device Name: ' + medCard.playerDevice);
@@ -529,6 +532,19 @@ class Plex {
 
         }
       }, undefined);
+    }
+
+    // Log now-screening sessions once, only when the state changes
+    const nsCurrentState = nsDebugLines.join("|");
+    if(nsCurrentState !== _nsLastLoggedState) {
+      _nsLastLoggedState = nsCurrentState;
+      let dbgNow = new Date();
+      if(nsDebugLines.length === 0) {
+        console.log(dbgNow.toLocaleString() + " [NS Debug] Nothing playing");
+      } else {
+        console.log(dbgNow.toLocaleString() + " [NS Debug] Now playing:");
+        nsDebugLines.forEach(l => console.log(l));
+      }
     }
 
     // return populated array
