@@ -451,6 +451,11 @@ class Plex {
         medCard.playerIP = md.Player.address;
         medCard.playerLocal = md.Player.local;
 
+        // Debug: log device and title info
+        let dbgTitle = md.type === "episode" ? (md.grandparentTitle + " - " + md.title) : md.title;
+        let dbgNow = new Date();
+        console.log(dbgNow.toLocaleString() + " [NS Debug] Device: '" + medCard.playerDevice + "' | User: '" + (md.User ? md.User.title : "unknown") + "' | Playing: '" + dbgTitle + "' | Local: " + md.Player.local);
+
         // console.log(" ");
         // console.log('Device Name: ' + medCard.playerDevice);
         // console.log('Playing: ' + medCard.title);
@@ -486,16 +491,18 @@ class Plex {
           // Connection-type filters
           if(filterRemote=='true' && medCard.playerLocal == false) okToAdd = true;
           if(filterLocal=='true' && medCard.playerLocal == true) okToAdd = true;
-          // Device filter: positively grant if this device is in the allow-list
-          if(hasDeviceFilter && !util.isEmpty(medCard.playerDevice) && devices.includes(medCard.playerDevice.toLowerCase())) okToAdd = true;
+          // Device filter: inline null-safe check (util.isEmpty is async and cannot be used here without await)
+          const deviceName = (medCard.playerDevice != null && medCard.playerDevice !== "") ? medCard.playerDevice.toLowerCase() : null;
+          if(hasDeviceFilter && deviceName && devices.includes(deviceName)) okToAdd = true;
           // User filter: positively grant if this user is in the allow-list
-          if(hasUserFilter && users.includes(md.User.title.toLowerCase())) okToAdd = true;
+          const userName = md.User && md.User.title ? md.User.title.toLowerCase() : null;
+          if(hasUserFilter && userName && users.includes(userName)) okToAdd = true;
 
           // --- Negative overrides (revoke if criteria not met) ---
           // If a user filter is set and this user is NOT in the list, deny
-          if(hasUserFilter && users.includes(md.User.title.toLowerCase())==false) okToAdd = false;
+          if(hasUserFilter && (!userName || users.includes(userName)==false)) okToAdd = false;
           // If a device filter is set and this device is NOT in the list, deny
-          if(hasDeviceFilter && !util.isEmpty(medCard.playerDevice) && devices.includes(medCard.playerDevice.toLowerCase())==false) okToAdd = false;
+          if(hasDeviceFilter && (!deviceName || devices.includes(deviceName)==false)) okToAdd = false;
           // Always deny excluded libraries
           if(excludeLibs !== undefined && excludeLibs !== "" && excludeLibs.includes(md.librarySectionTitle)) { 
             //console.log('Now Screening - Excluded library:', md.librarySectionTitle);
