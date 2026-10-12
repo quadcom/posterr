@@ -247,14 +247,12 @@ class Jellyfin {
     return devices.some((d) => {
       const di = String(d).toLowerCase().trim();
       if (!di) return false;
+      // An empty name must never match: "shield".includes("") is true, and the display name is empty whenever
+      // "hide user" is on, which let every player through the device filter.
       return (
         blob === di ||
-        pd === di ||
-        dd === di ||
-        pd.includes(di) ||
-        dd.includes(di) ||
-        di.includes(pd) ||
-        di.includes(dd)
+        (pd && (pd === di || pd.includes(di) || di.includes(pd))) ||
+        (dd && (dd === di || dd.includes(di) || di.includes(dd)))
       );
     });
   }
