@@ -734,13 +734,17 @@ class Jellyfin {
     let odRaw = [];
     try {
       const keys = await this.resolveLibraryIds(onDemandLibraries || "");
+      // Like the Plex version, "recently added" adds its own slides on top of the random picks, not instead of them.
+      const passes = recentlyAdded > 0 ? [recentlyAdded, 0] : [0];
       for (const libId of keys) {
-        const batch = await this.fetchLibraryItems(libId, genres, recentlyAdded, contentRatings);
-        if (!batch.length) continue;
-        const picked = await util.build_random_od_set(numberOnDemand, batch, recentlyAdded);
-        for (const odc of picked) {
-          odc.ctype = recentlyAdded > 0 ? CardTypeEnum.RecentlyAdded : CardTypeEnum.OnDemand;
-          odRaw.push(odc);
+        for (const days of passes) {
+          const batch = await this.fetchLibraryItems(libId, genres, days, contentRatings);
+          if (!batch.length) continue;
+          const picked = await util.build_random_od_set(numberOnDemand, batch, days);
+          for (const odc of picked) {
+            odc.ctype = days > 0 ? CardTypeEnum.RecentlyAdded : CardTypeEnum.OnDemand;
+            odRaw.push(odc);
+          }
         }
       }
     } catch (err) {
