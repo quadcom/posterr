@@ -5,6 +5,8 @@ const util = require("./../core/utility");
 const core = require("./../core/cache");
 const { CardTypeEnum } = require("./../cards/CardType");
 const { error } = require("jquery");
+// Track last logged NS sessions to avoid repeating log lines every poll cycle
+let _nsLastLoggedState = "";
 // const sizeOf = require("image-size");
 
 /**
@@ -22,6 +24,7 @@ class Plex {
     this.plexPort = plexPort;
     this.plexToken = plexToken;
     this.libraryKeys = [];
+    this._loggedSessions = new Set();
 
     // create connection to use
     this.client = new plexAPI({
@@ -90,6 +93,7 @@ class Plex {
       throw err;
     }
     // reutrn an empty array if no results
+    let nsDebugLines = [];
     if (
       nsRaw != [] &&
       nsRaw.MediaContainer != undefined &&
@@ -475,6 +479,10 @@ class Plex {
         medCard.playerIP = md.Player.address;
         medCard.playerLocal = md.Player.local;
 
+        // Debug: collect session info for change-detection logging (logged once after loop, only on change)
+        let dbgTitle = md.type === "episode" ? (md.grandparentTitle + " - " + md.title) : md.title;
+        nsDebugLines.push("  Device: '" + medCard.playerDevice + "' | User: '" + (md.User ? md.User.title : "unknown") + "' | Playing: '" + dbgTitle + "' | Local: " + md.Player.local);
+
         // console.log(" ");
         // console.log('Device Name: ' + medCard.playerDevice);
         // console.log('Playing: ' + medCard.title);
@@ -497,17 +505,32 @@ class Plex {
           devices = devices.toLowerCase().replace(", ",",").replace(" ,",",").replace(/,+$/, "").split(",");
           let users = filterUsers !== undefined ? filterUsers : "";
           users = users.toLowerCase().replace(", ",",").replace(" ,",",").replace(/,+$/, "").split(",");
-          const anyLocationFilter =
-            filterRemote === "true" || filterLocal === "true";
           let okToAdd = false;
-          if (!anyLocationFilter) {
-            okToAdd = true;
-          } else {
-            if (filterRemote === "true" && medCard.playerLocal === false) okToAdd = true;
-            if (filterLocal === "true" && medCard.playerLocal === true) okToAdd = true;
-          }
-          if(users.length > 0 && users.includes(md.User.title.toLowerCase())==false && users[0] !== "") okToAdd = false;
-          if(devices.length > 0 && !util.isEmpty(medCard.playerDevice) && devices.includes(medCard.playerDevice.toLowerCase())==false && devices[0] !== "") okToAdd = false;
+
+          // Determine if any positive filters are configured
+          const hasDeviceFilter = devices[0] !== "";
+          const hasUserFilter = users[0] !== "";
+          const noFiltersSet = filterRemote !== 'true' && filterLocal !== 'true' && !hasDeviceFilter && !hasUserFilter;
+
+          // --- Positive grants (any matching condition allows the card through) ---
+          // If no filters at all are configured, show everything
+          if(noFiltersSet) okToAdd = true;
+          // Connection-type filters
+          if(filterRemote=='true' && medCard.playerLocal == false) okToAdd = true;
+          if(filterLocal=='true' && medCard.playerLocal == true) okToAdd = true;
+          // Device filter: inline null-safe check (util.isEmpty is async and cannot be used here without await)
+          const deviceName = (medCard.playerDevice != null && medCard.playerDevice !== "") ? medCard.playerDevice.toLowerCase() : null;
+          if(hasDeviceFilter && deviceName && devices.includes(deviceName)) okToAdd = true;
+          // User filter: positively grant if this user is in the allow-list
+          const userName = md.User && md.User.title ? md.User.title.toLowerCase() : null;
+          if(hasUserFilter && userName && users.includes(userName)) okToAdd = true;
+
+          // --- Negative overrides (revoke if criteria not met) ---
+          // If a user filter is set and this user is NOT in the list, deny
+          if(hasUserFilter && (!userName || users.includes(userName)==false)) okToAdd = false;
+          // If a device filter is set and this device is NOT in the list, deny
+          if(hasDeviceFilter && (!deviceName || devices.includes(deviceName)==false)) okToAdd = false;
+          // Always deny excluded libraries
           if(excludeLibs !== undefined && excludeLibs !== "" && excludeLibs.includes(md.librarySectionTitle)) { 
             //console.log('Now Screening - Excluded library:', md.librarySectionTitle);
             okToAdd = false;
@@ -533,6 +556,19 @@ class Plex {
 
         }
       }, undefined);
+    }
+
+    // Log now-screening sessions once, only when the state changes
+    const nsCurrentState = nsDebugLines.join("|");
+    if(nsCurrentState !== _nsLastLoggedState) {
+      _nsLastLoggedState = nsCurrentState;
+      let dbgNow = new Date();
+      if(nsDebugLines.length === 0) {
+        console.log(dbgNow.toLocaleString() + " [NS Debug] Nothing playing");
+      } else {
+        console.log(dbgNow.toLocaleString() + " [NS Debug] Now playing:");
+        nsDebugLines.forEach(l => console.log(l));
+      }
     }
 
     // return populated array
