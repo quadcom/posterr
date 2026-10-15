@@ -688,15 +688,25 @@ class Jellyfin {
     return list;
   }
 
-  async fetchLibraryItems(parentId, genres, recentlyAdded, contentRatings) {
-    const data = await this.request("get", "/Items", {
+  // Asks the server for only what a refresh can show (PLAN_SHA_50): reading the whole library twice every refresh
+  // loaded PlezyFin for a dozen posters. Fields lists only real ItemFields names; the rest arrive without asking, and
+  // unknown names make the server log an error on every request.
+  async fetchLibraryItems(parentId, genres, recentlyAdded, contentRatings, numberOnDemand) {
+    const params = {
       ParentId: parentId,
       Recursive: true,
       IncludeItemTypes: "Movie,Series",
-      Limit: 20000,
-      Fields:
-        "Overview,Genres,DateCreated,RunTimeTicks,CommunityRating,OfficialRating,Taglines,ProductionYear,Studios,Path,ParentBackdropItemId,SeriesId,ParentPrimaryImageItemId",
-    });
+      Fields: "Overview,Genres,DateCreated,Taglines,Studios",
+    };
+    if (recentlyAdded > 0) {
+      // The newest 200 cover any "recently added" window this library sees; the date filter below trims them.
+      Object.assign(params, { SortBy: "DateCreated", SortOrder: "Descending", Limit: 200 });
+    } else {
+      // Ten times what is shown leaves room for the rating exclusion, which the server cannot do.
+      Object.assign(params, { SortBy: "Random", Limit: Math.max(60, (Number(numberOnDemand) || 6) * 10) });
+      if (genres && genres.length) params.Genres = genres.join("|");
+    }
+    const data = await this.request("get", "/Items", params);
     const raw = (data && data.Items) || [];
     return this.filterItemsByGenreAndRating(raw, genres, contentRatings, recentlyAdded);
   }
@@ -736,7 +746,7 @@ class Jellyfin {
       const passes = recentlyAdded > 0 ? [recentlyAdded, 0] : [0];
       for (const libId of keys) {
         for (const days of passes) {
-          const batch = await this.fetchLibraryItems(libId, genres, days, contentRatings);
+          const batch = await this.fetchLibraryItems(libId, genres, days, contentRatings, numberOnDemand);
           if (!batch.length) continue;
           const picked = await util.build_random_od_set(numberOnDemand, batch, days);
           for (const odc of picked) {
