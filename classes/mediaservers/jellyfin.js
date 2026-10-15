@@ -6,6 +6,10 @@ const fsp = require("fs").promises;
 const path = require("path");
 const { CardTypeEnum } = require("./../cards/CardType");
 
+// Module level, because index.js makes a new server object every poll.
+const libFolderCache = { at: 0, folders: [] };
+const oldSchoolCache = { at: 0, end: 0, breaks: null, failing: false };
+
 /**
  * Jellyfin media server (Emby API compatible).
  * @param {boolean|string} HTTPS
@@ -341,14 +345,65 @@ class Jellyfin {
     return { contentRating: cr === "unrated" ? "NR" : cr, ratingColour };
   }
 
-  async getLibraryNameForItem(itemId) {
+  // Matches the item's file path to a library's folders. Item ancestors carry no CollectionType on PlezyFin,
+  // so asking them never found a library and excludeLibs had no effect.
+  async getLibraryNameForItem(np) {
+    const p = String(np.Path || "");
+    if (!p) return "";
     try {
-      const ancestors = await this.request("get", `/Items/${itemId}/Ancestors`, {});
-      if (!Array.isArray(ancestors)) return "";
-      const lib = ancestors.find((a) => a.CollectionType && a.Name);
-      return lib ? lib.Name : "";
+      if (Date.now() - libFolderCache.at > 30 * 60 * 1000) {
+        const folders = await this.request("get", "/Library/VirtualFolders", {});
+        libFolderCache.folders = Array.isArray(folders) ? folders : [];
+        libFolderCache.at = Date.now();
+      }
     } catch {
       return "";
+    }
+    let best = "";
+    let bestLen = 0;
+    for (const f of libFolderCache.folders) {
+      for (const loc of f.Locations || []) {
+        const l = String(loc).replace(/\/+$/, "");
+        if ((p === l || p.startsWith(l + "/")) && l.length > bestLen) {
+          best = f.Name || "";
+          bestLen = l.length;
+        }
+      }
+    }
+    return best;
+  }
+
+  /**
+   * Old School break entries (trailers, music, standby) from the server's guide, as {itemId, start, end} in ms.
+   * Plezy reports break items as ordinary playback, and the guide is the only place that tells a break from a
+   * programme. Returns null when the guide cannot be read, so the caller shows the card as before.
+   */
+  async oldSchoolBreaks() {
+    const now = Date.now();
+    if (oldSchoolCache.breaks && now - oldSchoolCache.at < 10 * 60 * 1000 && oldSchoolCache.end - now > 10 * 60 * 1000) {
+      return oldSchoolCache.breaks;
+    }
+    try {
+      const g = await this.request("get", "/PlezyFin/OldSchool/Guide", { hours: 1 });
+      const breaks = [];
+      for (const ch of (g && g.channels) || []) {
+        for (const e of ch.entries || []) {
+          if (e.kind === "show" || !e.itemId) continue;
+          breaks.push({ itemId: String(e.itemId), start: Date.parse(e.start), end: Date.parse(e.end) });
+        }
+      }
+      oldSchoolCache.breaks = breaks;
+      oldSchoolCache.at = now;
+      oldSchoolCache.end = Date.parse(g.end) || now;
+      oldSchoolCache.failing = false;
+      return breaks;
+    } catch (err) {
+      if (!oldSchoolCache.failing) {
+        console.log(new Date().toLocaleString() + " *Now Scrn. - " + this.displayName +
+          " cannot read the Old School guide, so break items show as Now Playing: " + err.message);
+        oldSchoolCache.failing = true;
+      }
+      return null;
     }
   }
 
@@ -428,9 +483,17 @@ class Jellyfin {
       .split(",")
       .filter(Boolean);
 
+    const breaks = sessions.some((s) => s.NowPlayingItem && s.NowPlayingItem.Id) ? await this.oldSchoolBreaks() : null;
+
     for (const session of sessions) {
       const np = session.NowPlayingItem;
       if (!np || !np.Id) continue;
+      // An Old School break item playing now: leave the display on its normal rotation.
+      if (breaks) {
+        const now = Date.now();
+        const id = String(np.Id);
+        if (breaks.some((b) => b.itemId === id && b.start - 60000 <= now && now <= b.end + 120000)) continue;
+      }
       let runTicks = np.RunTimeTicks || 0;
       if (!runTicks && np.MediaSources && np.MediaSources[0] && np.MediaSources[0].RunTimeTicks) {
         runTicks = np.MediaSources[0].RunTimeTicks;
@@ -456,7 +519,7 @@ class Jellyfin {
 
       let libraryName = "";
       if (excludeList.length) {
-        libraryName = (await this.getLibraryNameForItem(np.Id)) || "";
+        libraryName = (await this.getLibraryNameForItem(np)) || "";
       }
 
       const medCard = new mediaCard();
