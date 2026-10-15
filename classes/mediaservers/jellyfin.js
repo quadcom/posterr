@@ -8,7 +8,8 @@ const { CardTypeEnum } = require("./../cards/CardType");
 
 // Module level, because index.js makes a new server object every poll.
 const libFolderCache = { at: 0, folders: [] };
-const oldSchoolCache = { at: 0, end: 0, breaks: null, failing: false };
+const oldSchoolCache = { at: 0, end: 0, guide: null, failing: false };
+const upNextItemCache = { id: "", item: null };
 
 /**
  * Jellyfin media server (Emby API compatible).
@@ -374,29 +375,31 @@ class Jellyfin {
   }
 
   /**
-   * Old School break entries (trailers, music, standby) from the server's guide, as {itemId, start, end} in ms.
-   * Plezy reports break items as ordinary playback, and the guide is the only place that tells a break from a
-   * programme. Returns null when the guide cannot be read, so the caller shows the card as before.
+   * The server's Old School guide: break entries (trailers, music, standby) and programme entries ("show"), each with
+   * its channel and start/end in ms. Plezy reports break items as ordinary playback, and the guide is the only place
+   * that tells a break from a programme and says what comes next. Returns null when the guide cannot be read, so the
+   * caller shows the card as before.
    */
-  async oldSchoolBreaks() {
+  async oldSchoolGuide() {
     const now = Date.now();
-    if (oldSchoolCache.breaks && now - oldSchoolCache.at < 10 * 60 * 1000 && oldSchoolCache.end - now > 10 * 60 * 1000) {
-      return oldSchoolCache.breaks;
+    if (oldSchoolCache.guide && now - oldSchoolCache.at < 10 * 60 * 1000 && oldSchoolCache.end - now > 10 * 60 * 1000) {
+      return oldSchoolCache.guide;
     }
     try {
       const g = await this.request("get", "/PlezyFin/OldSchool/Guide", { hours: 1 });
-      const breaks = [];
+      const guide = { breaks: [], shows: [] };
       for (const ch of (g && g.channels) || []) {
         for (const e of ch.entries || []) {
-          if (e.kind === "show" || !e.itemId) continue;
-          breaks.push({ itemId: String(e.itemId), start: Date.parse(e.start), end: Date.parse(e.end) });
+          if (!e.itemId) continue;
+          const entry = { ...e, channelId: e.channelId || ch.id, itemId: String(e.itemId), start: Date.parse(e.start), end: Date.parse(e.end) };
+          (e.kind === "show" ? guide.shows : guide.breaks).push(entry);
         }
       }
-      oldSchoolCache.breaks = breaks;
+      oldSchoolCache.guide = guide;
       oldSchoolCache.at = now;
       oldSchoolCache.end = Date.parse(g.end) || now;
       oldSchoolCache.failing = false;
-      return breaks;
+      return guide;
     } catch (err) {
       if (!oldSchoolCache.failing) {
         console.log(new Date().toLocaleString() + " *Now Scrn. - " + this.displayName +
@@ -405,6 +408,66 @@ class Jellyfin {
       }
       return null;
     }
+  }
+
+  /**
+   * The "Up Next" card shown during an Old School break: the next programme on that channel, with a countdown the
+   * poster page ticks in the browser from upNextStart.
+   */
+  async upNextCard(next, session, hasArt, hideUser, seriesPosterForEpisodes) {
+    // The guide has no rating; one item read per programme, kept until the next programme.
+    if (upNextItemCache.id !== next.itemId) {
+      let item = null;
+      try {
+        const r = await this.request("get", "/Items", { Ids: next.itemId });
+        item = (r && r.Items && r.Items[0]) || null;
+      } catch {
+        item = null;
+      }
+      upNextItemCache.id = next.itemId;
+      upNextItemCache.item = item;
+    }
+    const item = upNextItemCache.item || {};
+    const isEpisode = next.itemType === "Episode";
+    const card = new mediaCard();
+    card.cardType = ["Now Screening", "Up Next"];
+    card.upNextStart = new Date(next.start).toISOString();
+    card.DBID = (isEpisode && next.seriesId) || next.itemId;
+    card.theme = "";
+    if (isEpisode) {
+      card.title = next.seriesName || "";
+      card.episodeName = next.name || "";
+      card.tagLine = `${next.seriesName || ""}, Season ${next.seasonNumber} Episode ${next.episodeNumber} — '${next.name || ""}'`;
+    } else {
+      card.title = next.name || "";
+      card.tagLine = [next.name || "", next.year || ""].filter(Boolean).join(" (") + (next.year ? ")" : "");
+    }
+    const useSeries = isEpisode && next.seriesId && this.useSeriesPosterFromSetting(seriesPosterForEpisodes);
+    const posterId = useSeries ? String(next.seriesId) : (next.imageTags && next.imageTags.primary && next.imageTags.primary.itemId) || next.itemId;
+    const fileName = useSeries ? `ser-${posterId}.jpg` : isEpisode ? `e-${posterId}.jpg` : `${posterId}.jpg`;
+    await this.cacheItemImage(fileName, posterId, ["Primary", "Thumb"]);
+    card.posterURL = "/imagecache/" + fileName;
+    if (hasArt === "true") {
+      const artName = `upnext-${next.itemId}-art.jpg`;
+      const backdrop = next.imageTags && next.imageTags.backdrop && next.imageTags.backdrop.itemId;
+      const ok = await this.cacheItemImage(artName, backdrop ? [backdrop, next.itemId] : [next.itemId], "Backdrop", 0, { quietNotFound: true });
+      if (ok) card.posterArtURL = "/imagecache/" + artName;
+    }
+    card.posterAR = 1.5;
+    card.mediaType = isEpisode ? "episode" : "movie";
+    card.runTime = next.runTimeTicks ? Math.round(next.runTimeTicks / 10000000 / 60) : 0;
+    const rc = this.ratingColour(item.OfficialRating || "NR");
+    card.contentRating = rc.contentRating;
+    card.ratingColour = rc.ratingColour;
+    card.rating = item.CommunityRating ? Math.round(item.CommunityRating * 10) + "%" : "";
+    card.genre = item.Genres || [];
+    card.summary = next.overview || "";
+    if (hideUser !== "true") {
+      card.user = session.UserName || "";
+      card.device = session.DeviceName || session.Client || "";
+    }
+    card.playerDevice = session.DeviceName || session.Client || "";
+    return card;
   }
 
   pickVideoAudioStreams(item) {
@@ -483,16 +546,47 @@ class Jellyfin {
       .split(",")
       .filter(Boolean);
 
-    const breaks = sessions.some((s) => s.NowPlayingItem && s.NowPlayingItem.Id) ? await this.oldSchoolBreaks() : null;
+    const guide = sessions.some((s) => s.NowPlayingItem && s.NowPlayingItem.Id) ? await this.oldSchoolGuide() : null;
+    const upNextShown = new Set();
+
+    const allowed = (session, card, libraryName) => {
+      const playerLocal = this.isPrivateEndpoint((session.RemoteEndPoint || "").split(":")[0]);
+      let ok = !(filterRemote === "true" || filterLocal === "true");
+      if (filterRemote === "true" && playerLocal === false) ok = true;
+      if (filterLocal === "true" && playerLocal === true) ok = true;
+      if (users.length && session.UserName && !users.includes(String(session.UserName).toLowerCase())) ok = false;
+      if (devices.length && !this.deviceFilterAllows(devices, card.playerDevice, card.device)) ok = false;
+      if (excludeList.length && libraryName && excludeList.includes(libraryName.toLowerCase())) ok = false;
+      return ok;
+    };
 
     for (const session of sessions) {
       const np = session.NowPlayingItem;
       if (!np || !np.Id) continue;
-      // An Old School break item playing now: leave the display on its normal rotation.
-      if (breaks) {
+      // An Old School break item playing now: show the channel's next programme as "Up Next" instead, or nothing.
+      if (guide) {
         const now = Date.now();
         const id = String(np.Id);
-        if (breaks.some((b) => b.itemId === id && b.start - 60000 <= now && now <= b.end + 120000)) continue;
+        const hits = guide.breaks.filter((b) => b.itemId === id && b.start - 60000 <= now && now <= b.end + 120000);
+        if (hits.length) {
+          const nexts = new Map();
+          for (const b of hits) {
+            const next = guide.shows
+              .filter((s) => s.channelId === b.channelId && s.start >= b.start)
+              .sort((x, y) => x.start - y.start)[0];
+            nexts.set(next ? next.itemId + "@" + next.start : "none", next);
+          }
+          // Two channels with different next programmes: which one is on is unknown, so no card rather than a guess.
+          const next = nexts.size === 1 ? [...nexts.values()][0] : null;
+          if (next && !upNextShown.has(next.channelId + "@" + next.start)) {
+            const card = await this.upNextCard(next, session, hasArt, hideUser, seriesPosterForEpisodes);
+            if (allowed(session, card, "")) {
+              upNextShown.add(next.channelId + "@" + next.start);
+              nsCards.push(card);
+            }
+          }
+          continue;
+        }
       }
       let runTicks = np.RunTimeTicks || 0;
       if (!runTicks && np.MediaSources && np.MediaSources[0] && np.MediaSources[0].RunTimeTicks) {
@@ -684,24 +778,7 @@ class Jellyfin {
 
       medCard.decision = transcode === "transcode" ? "transcode" : "direct";
 
-      const anyLocationFilter =
-        filterRemote === "true" || filterLocal === "true";
-      let okToAdd = false;
-      if (!anyLocationFilter) {
-        okToAdd = true;
-      } else {
-        if (filterRemote === "true" && playerLocal === false) okToAdd = true;
-        if (filterLocal === "true" && playerLocal === true) okToAdd = true;
-      }
-      if (users.length && session.UserName && !users.includes(String(session.UserName).toLowerCase())) okToAdd = false;
-      if (
-        devices.length &&
-        !this.deviceFilterAllows(devices, medCard.playerDevice, medCard.device)
-      )
-        okToAdd = false;
-      if (excludeList.length && libraryName && excludeList.includes(libraryName.toLowerCase())) okToAdd = false;
-
-      if (okToAdd) nsCards.push(medCard);
+      if (allowed(session, medCard, libraryName)) nsCards.push(medCard);
     }
 
     return nsCards;

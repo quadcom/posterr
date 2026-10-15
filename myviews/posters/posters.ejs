@@ -396,6 +396,14 @@ function startInactivityCheck(element, delay, callbackInactivity, callbackActive
   $(function () {
     // initial load of cards and connection check timer every 5 seconds
     setInterval(connCheck,5000);
+    // Up Next countdowns tick here, against the programme's start time, because card HTML only changes on refresh.
+    setInterval(function () {
+      document.querySelectorAll(".upNextCountdown").forEach(function (el) {
+        var left = Math.round((Date.parse(el.dataset.start) - Date.now()) / 1000);
+        if (isNaN(left)) { el.textContent = ""; return; }
+        el.textContent = left <= 0 ? "Starting now" : "Starts in " + Math.floor(left / 60) + ":" + String(left % 60).padStart(2, "0");
+      });
+    }, 1000);
     getCards();
   });
 

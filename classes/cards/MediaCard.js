@@ -52,6 +52,7 @@ class MediaCard {
     this.linkUrl = "";
     this.youtubeKey = "";
     this.remoteSessionId = "";
+    this.upNextStart = "";
   }
 
   /**
@@ -97,6 +98,12 @@ class MediaCard {
 
     // set to hide progress bar if not a playing type of card
     if (ct0 != "Now Screening" && ct0 != "Playing") hidden = "hidden";
+    // An Up Next card is not playing yet: no progress bar, a countdown instead (ticked by the poster page).
+    let upNextRender = "";
+    if (this.upNextStart) {
+      hidden = "hidden";
+      upNextRender = `<div class="upNextCountdown" data-start="` + this.upNextStart + `"></div>`;
+    }
     
     // get custom card title
     let cardCustomTitle = ct1 !== "" ? ct1 : ct0;
@@ -259,7 +266,12 @@ class MediaCard {
         "<span class='badge badge-pill badge-dark'> " + this.rating + "</span>";
     }
 
-    if(ct0 == "Now Screening" || ct0 == "Playing") {
+    if (this.upNextStart) {
+      const startTime = new Date(this.upNextStart).toLocaleTimeString("en-US", {hour12: false, hour: "2-digit", minute: "2-digit"});
+      endTimePill =
+        "<span class='badge badge-pill badge-dark'>Starts: " + startTime + "</span>";
+    }
+    else if(ct0 == "Now Screening" || ct0 == "Playing") {
       endTimePill =
         "<span class='badge badge-pill badge-dark'>End: " + endTime + "</span>";
     }
@@ -330,7 +342,7 @@ class MediaCard {
       `" aria-valuemin="0" aria-valuemax="` +
       this.runTime +
       `"></div>
-        </div>
+        </div>` + upNextRender + `
       <div class="hidden" id="poster` + this.ID + `AR">`+this.posterAR+`</div>` +
       this.triviaRender + this.linkRender +
       `</div>

@@ -898,3 +898,23 @@ a.alert-link {
    transform: translateX(-50%);
 }
 
+
+/* Up Next card during an Old School break: countdown to the next programme, on the poster's lower edge. */
+.upNextCountdown {
+  position: absolute;
+  bottom: 4%;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1001;
+  padding: 0.2em 0.8em;
+  border-radius: 0.3em;
+  background-color: rgba(0, 0, 0, 0.7);
+  color: white;
+  font-size: 5vh;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.upNextCountdown:empty {
+  display: none;
+}
